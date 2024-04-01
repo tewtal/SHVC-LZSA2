@@ -16,14 +16,14 @@
 
 ; Scratchpad
 if !LZSA2_OPT_DMA_SCRATCHPAD = 1
-    LZSA2_token            = $804340 ; Current token
-    LZSA2_nibble           = $804341 ; Current nibble
-    LZSA2_nibrdy           = $804342 ; Nibble ready
-    LZSA2_match            = $804343 ; Previous match offset
-    LZSA2_source           = $804345 ; Source (indirect long)
-    LZSA2_dest             = $804348 ; Destination (indirect long)
-    LZSA2_mvl              = $804350 ; Literal block move (mvn + banks + return)
-    LZSA2_mvm              = $804354 ; Match block move (mvn + banks + return)
+    LZSA2_token            = $804307 ; Current token
+    LZSA2_nibble           = $804308 ; Current nibble
+    LZSA2_nibrdy           = $804309 ; Nibble ready
+    LZSA2_match            = $80430A ; Previous match offset
+    LZSA2_source           = $804318 ; Source (indirect long)
+    LZSA2_dest             = $804360 ; Destination (indirect long)
+    LZSA2_mvl              = $804363 ; Literal block move (mvn + banks + return)
+    LZSA2_mvm              = $804367 ; Match block move (mvn + banks + return)
 else
     LZSA2_token            = !Scratchpad+$00 ; Current token
     LZSA2_nibble           = !Scratchpad+$01 ; Current nibble
