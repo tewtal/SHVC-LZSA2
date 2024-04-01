@@ -5,14 +5,6 @@
 ;
 ; LZSA2 decompressor
 
-; TODO
-; - Try source offset always in 16-bit x, dest in Y; minimize accumulator width toggling
-; - Check bank if mvn jump can be short
-; - Option to inline nibble access
-
-; LZSA2_opt_dma_scratchpad
-; - Document speed diff
-
 ; LZSA2_OPT_DMA_SCRATCHPAD
 ; Use SNES DMA registers at $4370-$4377 as scratchpad for MVN instructions.
 ;
@@ -20,19 +12,18 @@
 ; 1 - Use DMA registers as scratchpad (no direct page usage)
 
 !Scratchpad = $39
-!LZSA2_OPT_DMA_SCRATCHPAD = 0 ; Use DMA registers as scratchpad for MVN instructions
-
+!LZSA2_OPT_DMA_SCRATCHPAD = 1 ; Use DMA registers as scratchpad for MVN instructions
 
 ; Scratchpad
 if !LZSA2_OPT_DMA_SCRATCHPAD = 1
-    LZSA2_token            = $804340 ; Current token
-    LZSA2_nibble           = $804341 ; Current nibble
-    LZSA2_nibrdy           = $804342 ; Nibble ready
-    LZSA2_match            = $804343 ; Previous match offset
-    LZSA2_source           = $804345 ; Source (indirect long)
-    LZSA2_dest             = $804348 ; Destination (indirect long)
-    LZSA2_mvl              = $804350 ; Literal block move (mvn + banks + return)
-    LZSA2_mvm              = $804354 ; Match block move (mvn + banks + return)
+    LZSA2_token            = $804307 ; Current token
+    LZSA2_nibble           = $804308 ; Current nibble
+    LZSA2_nibrdy           = $804309 ; Nibble ready
+    LZSA2_match            = $80430A ; Previous match offset
+    LZSA2_source           = $804318 ; Source (indirect long)
+    LZSA2_dest             = $804360 ; Destination (indirect long)
+    LZSA2_mvl              = $804363 ; Literal block move (mvn + banks + return)
+    LZSA2_mvm              = $804367 ; Match block move (mvn + banks + return)
 else
     LZSA2_token            = !Scratchpad+$00 ; Current token
     LZSA2_nibble           = !Scratchpad+$01 ; Current nibble
@@ -43,6 +34,69 @@ else
     LZSA2_mvl              = !Scratchpad+$0d ; Literal block move (mvn + banks + return)
     LZSA2_mvm              = !Scratchpad+$11 ; Match block move (mvn + banks + return)
 endif
+
+macro ReadSource8()
+?ReadSource8_label:
+    lda.b [LZSA2_source]
+    rep #$20
+    inc.b LZSA2_source
+    sep #$20
+    bne ?.NoOverflow
+    inc.b LZSA2_source+$02
+    inc.b LZSA2_mvl+$02
+    pha
+    lda.b #$80
+    sta.b LZSA2_source+$01
+    pla
+?.NoOverflow
+endmacro
+
+macro ReadSource16()
+?ReadSource16_label:
+    lda.b LZSA2_source
+    cmp.w #$fffe
+    bcc ?.NoOverflow
+    beq ?.EvenOverFlow
+    
+    sep #$20
+    %ReadSource8()
+    xba
+    lda.b [LZSA2_source]
+    inc.b LZSA2_source
+    rep #$20
+    bra ?.Done
+?.EvenOverFlow
+    lda.b [LZSA2_source]
+    pha
+    lda.w #$8000
+    sta.w LZSA2_source
+    sep #$20
+    inc.b LZSA2_source+$02
+    inc.b LZSA2_mvl+$02
+    rep #$20
+    pla
+    bra ?.Done
+?.NoOverflow
+    lda.b [LZSA2_source]
+    inc.b LZSA2_source
+    inc.b LZSA2_source
+?.Done
+endmacro
+
+macro GetNibble()
+?GetNibble_label:
+    lsr.b LZSA2_nibrdy
+    bcs ?.NibbleReady
+    inc.b LZSA2_nibrdy
+    %ReadSource8()
+    sta.b LZSA2_nibble
+    lsr #4
+    bra ?.NibbleDone
+?.NibbleReady
+    lda.b LZSA2_nibble
+    and.b #$0f
+?.NibbleDone
+endmacro
 
 ; Decompress LZSA2 block
 ;
@@ -86,48 +140,44 @@ endif
     sta.b LZSA2_mvm+$03
 
 ReadToken:
-    lda.b [LZSA2_source]     ; Read token byte
+    %ReadSource8()
     sta.b LZSA2_token
-    rep #$20
-    inc.b LZSA2_source       ; Increment source pointer
-    sep #$20
 
 ;
 ; Decode literal length
 ;
 DecodeLitLen:
     and #%00011000          ; Mask literal type
-    beq DecodeMatchOffset   ; No literal
+    bne +
+    jmp DecodeMatchOffset   ; No literal
++
     cmp #%00010000
     beq .LitLen2
     bpl .ExtLitLen
 
 .LitLen1                   ; Copy 1 literal
-    lda.b [LZSA2_source]
+    %ReadSource8()
     sta.b [LZSA2_dest]
     rep #$20
-    inc.b LZSA2_source
     inc.b LZSA2_dest
     sep #$20
-    bra DecodeMatchOffset
+    jmp DecodeMatchOffset
 
 .LitLen2                   ; Copy 2 literals
     rep #$20
-    lda.b [LZSA2_source]
+    %ReadSource16()
     sta.b [LZSA2_dest]
-    inc.b LZSA2_source
     inc.b LZSA2_dest
-    inc.b LZSA2_source
     inc.b LZSA2_dest
     sep #$20
-    bra DecodeMatchOffset
+    jmp DecodeMatchOffset
 
 .ExtLitLen
-    jsr GetNibble
+    %GetNibble()
     cmp #$0f
     bne .LitLenNibble
 
-    lda.b LZSA2_source    ; Long literal, read next byte
+    %ReadSource8()
     cmp.b #$ef
     beq .LitLenWord
 
@@ -135,15 +185,12 @@ DecodeLitLen:
     clc
     adc.b #(15+3-1)
     rep #$20
-    inc.b LZSA2_source
     and.w #$00ff
     bra .CopyLiteral
 
 .LitLenWord                ; Literal length: Next word
     rep #$20
-    inc.b LZSA2_source
-    lda.b LZSA2_source
-    inc.b LZSA2_source
+    %ReadSource16()
     bra .CopyLiteral
 
 .LitLenNibble              ; Literal length: Nibble value + 3
@@ -153,6 +200,39 @@ DecodeLitLen:
     and.w #$00ff
 
 .CopyLiteral               ; Length in A
+    ; Check if literal block would wrap around bank boundary
+    pha
+    clc : adc.b LZSA2_source
+    bmi .NoWrap
+    
+    pha ; A = remaining bytes after wrap
+
+    ; Copy literal block up until bank boundary
+    lda.w #$ffff
+    sec : sbc.b LZSA2_source
+    
+    ldx.b LZSA2_source
+    ldy.b LZSA2_dest        ; 4
+    phb                     ; 3
+    jsl LZSA2_mvl           ; 8 -> 7 * len + 6
+    plb                     ; 4 25
+    sty.b LZSA2_dest        ; 4
+
+    lda #$8000
+    sta LZSA2_source
+    
+    sep #$20
+    inc.b LZSA2_source+$02
+    inc.b LZSA2_mvl+$02
+    rep #$20
+
+    pla
+    tax
+    pla
+    phx
+
+.NoWrap
+    pla
     ldx.b LZSA2_source       ; 4
     ldy.b LZSA2_dest         ; 4
     phb                     ; 3
@@ -175,7 +255,7 @@ DecodeMatchOffset:
 .MatchOffset00Z
     asl                     ; Shift Z to C
     php
-    jsr GetNibble
+    %GetNibble()
     plp
     rol                     ; Shift nibble, Z into bit 0
     eor.b #%11100001
@@ -183,7 +263,7 @@ DecodeMatchOffset:
     lda.b #$ff
     xba
     rep #$20
-    bra DecodeMatchLen
+    jmp DecodeMatchLen
 
 ; 01Z 9-bit offset:
 ; Read a byte for offset bits 0-7 and use the inverted bit Z for bit 8 of the offset.
@@ -191,7 +271,7 @@ DecodeMatchOffset:
 .MatchOffset01Z
     asl                     ; Shift Z to C
     php
-    lda.b [LZSA2_source]
+    %ReadSource8()
     xba
     plp
     lda.b #$00
@@ -199,8 +279,7 @@ DecodeMatchOffset:
     eor.b #$ff
     xba
     rep #$20
-    inc.b LZSA2_source
-    bra DecodeMatchLen
+    jmp DecodeMatchLen
 
 .LongMatchOffset
     asl                     ; Shift Y to C, Z to N
@@ -211,9 +290,7 @@ DecodeMatchOffset:
 ; Read a byte for offset bits 8-15, then another byte for offset bits 0-7.
 .MatchOffset110
     rep #$20
-    lda.b [LZSA2_source]
-    inc.b LZSA2_source
-    inc.b LZSA2_source
+    %ReadSource16()
     xba
     bra DecodeMatchLen
 
@@ -229,16 +306,15 @@ DecodeMatchOffset:
 .MatchOffset10Z:
     asl                     ; Shift Z to C
     php
-    jsr GetNibble
+    %GetNibble()
     plp
     rol                     ; Shift nibble, Z into bit 0, C = 0
     eor.b #%11100001
     dec
     dec
     xba
-    lda.b [LZSA2_source]
+    %ReadSource8()
     rep #$20
-    inc.b LZSA2_source
 
 ;
 ; Decode match length
@@ -255,23 +331,20 @@ DecodeMatchLen:             ; Match offset in A
     inc
     rep #$20
     and.w #$000f
-    bra .CopyMatch
+    jmp .CopyMatch
 
 .ExtMatchLen
-    jsr GetNibble
+    %GetNibble()
     cmp.b #$0f
     bne .MatchLenNibble
-    lda.b [LZSA2_source]     ; Long match, read next byte
+    %ReadSource8()
     cmp.b #$e8
     bcc .MatchLenByte
     beq Done
 
 .MatchLenWord              ; Match length: Next word
     rep #$20
-    inc.b LZSA2_source
-    lda.b [LZSA2_source]
-    inc.b LZSA2_source
-    inc.b LZSA2_source
+    %ReadSource16()
     dec
     bra .CopyMatch
 
@@ -280,7 +353,6 @@ DecodeMatchLen:             ; Match offset in A
     adc.b #(7+15+2-1)
     rep #$20
     and.w #$00ff
-    inc.b LZSA2_source
     bra .CopyMatch
 
 .MatchLenNibble            ; Match length: Nibble value + 2
@@ -317,26 +389,6 @@ if !LZSA2_OPT_DMA_SCRATCHPAD = 1
 endif
     rtl
 
-;
-; Get next nibble
-;
-GetNibble:
-    lsr.b LZSA2_nibrdy       ; Nibble ready?
-    bcs .NibbleReady
-    inc.b LZSA2_nibrdy       ; Flag nibble ready
-    lda.b [LZSA2_source]     ; Load and store next nibble
-    sta.b LZSA2_nibble
-    lsr
-    lsr
-    lsr
-    lsr
-    rep #$20                    ; Increment source pointer
-    inc.b LZSA2_source
-    sep #$20
-    rts
-.NibbleReady
-    lda.b LZSA2_nibble
-    and.b #$0f
-    rts
+
 
 LZSA2_DecompressBlock_END:
