@@ -9,7 +9,6 @@
 ; lz_token = !lzsa_vars
 ; lz_nibrdy = !lzsa_vars+1
 ; lz_nibble = !lzsa_vars+2
-; lz_literal = !lzsa_vars+3
 ; lz_temp = !lzsa_vars+5
 ; lz_mvl = !lzsa_vars+7
 ; lz_mvm = !lzsa_vars+11
@@ -17,12 +16,11 @@
 
 lz_mvl = $804307
 lz_mvm = $804317
-lz_token = $804360
-lz_nibrdy = $804361
-lz_nibble = $804362
-lz_literal = $804363
-lz_temp = $804365
-lz_match = $804367
+lz_token = $804367
+lz_nibrdy = $804368
+lz_nibble = $804369
+lz_temp = $804362
+lz_match = $80436a
 
 macro readByte()
 ?readByte:
@@ -110,6 +108,7 @@ lzsa2_decomp:
 
     sep #$20
     sta.b lz_mvl+$2
+    sta.b $64
     pha : plb
 
     lda.b #$54
@@ -134,6 +133,11 @@ lzsa2_decomp:
     stz.b lz_nibrdy
     stz.b lz_nibble
 
+    ; Setup DMA channel 6 for A-B copies from ROM to WRAM
+    stz.b $60
+    lda.b #$80
+    sta.b $61
+
 .readToken
     %readByte()
     sta.b lz_token
@@ -157,17 +161,16 @@ lzsa2_decomp:
     %readNibble()
     cmp.b #$0f
     beq .litByteLen
-    clc : adc.b #$02
+    clc : adc.b #$03
     bra .litCopy
 .litByteLen
     %readByte()
     cmp.b #$ef
     beq .litWordLen
-    clc : adc.b #$11
+    clc : adc.b #$12
     bra .litCopy
 .litWordLen
     %readWord()
-    dec
     bra .litCopyWord
 .litCopy
     rep #$20
@@ -186,12 +189,13 @@ lzsa2_decomp:
     pha ; A = remaining bytes after wrap
     lda.w #$ffff
     sec : sbc.b lz_temp
-
-    phb
-    jsr.w lz_mvl
-    plb
-
+    
+    sta.b $65
+    tya : clc : adc.b $65 : tay
+    
     sep #$20
+    lda.b #$40 : sta.l $00420b
+
     inc.b lz_mvl+2
     rep #$20
 
@@ -200,11 +204,13 @@ lzsa2_decomp:
 
 .noLitWrap
     pla
-    phb
-    jsr.w lz_mvl
-    plb
-    tya : sta.l $002181
+
+    sta.b $65
+    tya : clc : adc.b $65 : tay
+
     sep #$20
+    lda.b #$40 : sta.l $00420b
+    ldx.b $62
 
 .match
     lda.b lz_token
